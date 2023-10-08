@@ -26,7 +26,7 @@ class TestString(unittest.TestCase):
 
     def test_escape(self):
         self.assertEqual(parse_cos_value(rb"(hello\053world)"), (String("hello+world"), b""))
-        self.assertEqual(parse_cos_value(rb"(A\B)"), (String("A+B"), b""))
+        self.assertEqual(parse_cos_value(rb"(A\053B)"), (String("A+B"), b""))
 
     def test_pdf_doc_encoding(self):
         # TODO

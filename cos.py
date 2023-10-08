@@ -54,6 +54,8 @@ class Boolean(CosValue):
 class String(CosValue):
     value: str
 
+    _OCTAL_ESCAPE: typing.ClassVar[re.Pattern] = re.compile(r"\\\d\d\d")
+
     @classmethod
     def from_bytes(cls, string: bytes) -> tuple[String, bytes]:
         """
@@ -67,13 +69,17 @@ class String(CosValue):
         """
         string = string.strip()
         if string.startswith(b"("):
-            # TODO: handle escape sequences, PDFDocEncoding
+            # TODO: handle PDFDocEncoding, etc...
             try:
                 end_i = string.index(b")")
             except ValueError:
                 pass
             else:
-                return cls(string[1:end_i].decode("utf-8")), string[end_i + 1:]
+                string, remainder = string[1:end_i].decode("utf-8"), string[end_i + 1:]
+
+                string = re.sub(cls._OCTAL_ESCAPE, lambda match: chr(int(match.group()[1:], 8)), string)
+
+                return cls(string), remainder
 
         elif string.startswith(b"<"):
             try:
