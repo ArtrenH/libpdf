@@ -14,21 +14,21 @@ class ParseError(Exception): pass
 class CosValue(abc.ABC):
     @classmethod
     @abc.abstractmethod
-    def from_str(cls, string: str) -> tuple[typing.Self, str]:
+    def from_bytes(cls, string: bytes) -> tuple[typing.Self, bytes]:
         """Returns the parsed COS value and the remaining string."""
         raise ParseError
 
-    def to_str(self) -> str:
+    def to_bytes(self) -> str:
         ...
 
 
 @dataclasses.dataclass
 class Null(CosValue):
     @classmethod
-    def from_str(cls, string: str) -> tuple[Null, str]:
+    def from_bytes(cls, string: bytes) -> tuple[Null, bytes]:
         string = string.lstrip()
 
-        if string.lower().startswith("null"):
+        if string.lower().startswith(b"null"):
             return cls(), string[4:]
         else:
             raise ParseError(f"Could not parse null from {string!r}.")
@@ -39,12 +39,12 @@ class Boolean(CosValue):
     value: bool
 
     @classmethod
-    def from_str(cls, string: str) -> tuple[Boolean, str]:
+    def from_bytes(cls, string: bytes) -> tuple[Boolean, bytes]:
         string = string.lstrip().lower()
 
-        if string.startswith("true"):
+        if string.startswith(b"true"):
             return cls(True), string[4:]
-        elif string.startswith("false"):
+        elif string.startswith(b"false"):
             return cls(False), string[5:]
         else:
             raise ParseError(f"Could not parse boolean from {string!r}.")
@@ -55,7 +55,7 @@ class String(CosValue):
     value: str
 
     @classmethod
-    def from_str(cls, string: str) -> tuple[String, str]:
+    def from_bytes(cls, string: bytes) -> tuple[String, bytes]:
         """
         Examples:
             (Testing)                   % ASCII
@@ -66,23 +66,23 @@ class String(CosValue):
             <1C2D3F>                    % Arbitrary binary data
         """
         string = string.strip()
-        if string.startswith("("):
+        if string.startswith(b"("):
             # TODO: handle escape sequences, PDFDocEncoding
             try:
-                end_i = string.index(")")
+                end_i = string.index(b")")
             except ValueError:
                 pass
             else:
-                return cls(string[1:end_i]), string[end_i + 1:]
+                return cls(string[1:end_i].decode("utf-8")), string[end_i + 1:]
 
-        elif string.startswith("<"):
+        elif string.startswith(b"<"):
             try:
-                end_i = string.index(">") + 1
+                end_i = string.index(b">") + 1
             except ValueError as e:
                 raise ParseError(f"Could not parse String from {string!r}.") from e
             else:
                 string, remainder = string[:end_i], string[end_i:]
-                string = string[1:-1].replace(" ", "")
+                string = string[1:-1].decode("utf-8").replace(" ", "")
 
                 hex_nums_as_string = [elem for elem in zip(string[::2], string[1::2])]
                 try:
@@ -99,10 +99,10 @@ class String(CosValue):
 class Number(CosValue):
     value: float | int
 
-    _REGEX: typing.ClassVar[re.Pattern] = re.compile(r"([+-]?(?:\d+(?:\.\d+)?)|(?:\.\d+))")
+    _REGEX: typing.ClassVar[re.Pattern] = re.compile(rb"([+-]?(?:\d+(?:\.\d+)?)|(?:\.\d+))")
 
     @classmethod
-    def from_str(cls, string: str) -> tuple[Number, str]:
+    def from_bytes(cls, string: bytes) -> tuple[Number, bytes]:
         """
         Examples:
             1
@@ -129,7 +129,7 @@ class Number(CosValue):
                     raise ParseError(f"Could not parse Number from {string!r}.") from e
 
 
-_WHITESPACE = "\x00\x09\x0A\x0C\x0D\x20"
+_WHITESPACE = b"\x00\x09\x0A\x0C\x0D\x20"
 
 
 @dataclasses.dataclass
@@ -139,7 +139,7 @@ class Name(CosValue):
     _NONREGULAR_CHARACTERS: typing.ClassVar[re.Pattern] = re.compile("#[0-9A-Fa-f]{2}")
 
     @classmethod
-    def from_str(cls, string: str) -> tuple[Name, str]:
+    def from_bytes(cls, string: bytes) -> tuple[Name, bytes]:
         """
         Examples:
             /Type
@@ -149,20 +149,22 @@ class Name(CosValue):
         """
         string = string.lstrip()
 
-        if not string.startswith("/"):
+        if not string.startswith(b"/"):
             raise ParseError(f"Invalid Name {string!r}. Must start with a slash/SOLIDUS (\"/\").")
 
         # remove slash
         string = string[1:]
 
         for i, char in enumerate(string):
-            if not (0x21 < ord(char) < 0x7E) or char in _WHITESPACE or char in "/%[]<>{}()":
+            if not (0x21 < char < 0x7E) or bytes((char,)) in _WHITESPACE + b"/%[]<>{}()":
                 # name ends here
                 string, remainder = string[:i], string[i:]
                 break
         else:
             # name ends at the end of the string
-            string, remainder = string, ""
+            string, remainder = string, b""
+
+        string = string.decode("utf-8")
 
         try:
             string = re.sub(cls._NONREGULAR_CHARACTERS, lambda match: chr(int(match.group()[1:], 16)), string)
@@ -177,10 +179,10 @@ class Array(CosValue):
     elements: list[CosValue]
 
     @classmethod
-    def from_str(cls, string: str) -> tuple[Array, str]:
+    def from_bytes(cls, string: bytes) -> tuple[Array, bytes]:
         string = string.lstrip()
 
-        if not string.startswith("["):
+        if not string.startswith(b"["):
             raise ParseError("Array must be delimited by square brackets.")
 
         string = string[1:]
@@ -188,11 +190,11 @@ class Array(CosValue):
         elements: list[CosValue] = []
 
         while True:
+            string = string.lstrip()
             try:
                 element, string = parse_cos_value(string)
-                string = string.lstrip()
             except ParseError as e:
-                if string.startswith("]"):
+                if string.startswith(b"]"):
                     string = string[1:]
                     break
                 else:
@@ -207,10 +209,35 @@ class Array(CosValue):
 class Dictionary(CosValue):
     value: dict
 
+    @classmethod
+    def from_bytes(cls, string: bytes) -> tuple[Dictionary, bytes]:
+        string = string.lstrip()
 
-@dataclasses.dataclass
-class NameTree(CosValue):
-    value: dict
+        if not string.startswith(b"<<"):
+            raise ParseError("Dictionary must be delimited by double angle brackets.")
+
+        string = string[2:]
+
+        value: dict = {}
+
+        while True:
+            string = string.lstrip()
+            try:
+                key, string = Name.from_bytes(string)
+            except ParseError as e:
+                if string.startswith(b">>"):
+                    string = string[2:]
+                    break
+                else:
+                    raise ParseError(f"Could not parse Dictionary from {string!r}.") from e
+            else:
+                string = string.lstrip()
+                try:
+                    value[key.label], string = parse_cos_value(string)
+                except ParseError as e:
+                    raise ParseError(f"Could not parse Dictionary from {string!r}.") from e
+
+        return cls(value), string
 
 
 @dataclasses.dataclass
@@ -218,16 +245,34 @@ class Stream(CosValue):
     stream_dict: Dictionary
     value: bytes
 
+    @classmethod
+    def from_bytes(cls, string: bytes) -> tuple[Stream, bytes]:
+        dictionary, string = Dictionary.from_bytes(string)
+
+        string = string.lstrip()
+
+        if not string.startswith(b"stream\n"):
+            raise ParseError("Stream must be delimited by the stream keyword.")
+
+        string = string[7:]
+
+        try:
+            out_bytes, remainder = string.split(b"\nendstream", 1)
+        except ValueError as e:
+            raise ParseError("Stream must be delimited by the endstream keyword.") from e
+
+        return cls(dictionary, out_bytes), remainder
+
 
 @dataclasses.dataclass
 class Reference(CosValue):
     obj_num: int
     gen_num: int
 
-    _REGEX: typing.ClassVar[re.Pattern] = re.compile(r"(\d+)\s+(\d+)\s+R")
+    _REGEX: typing.ClassVar[re.Pattern] = re.compile(rb"(\d+)\s+(\d+)\s+R")
 
     @classmethod
-    def from_str(cls, string: str) -> tuple[Reference, str]:
+    def from_bytes(cls, string: bytes) -> tuple[Reference, bytes]:
         string = string.lstrip()
 
         match = cls._REGEX.match(string)
@@ -238,12 +283,12 @@ class Reference(CosValue):
             return cls(int(obj_num), int(gen_num)), string[match.end():]
 
 
-def parse_cos_value(string: str) -> tuple[CosValue, str]:
-    types = Null, Boolean, String, Number, Name, Array, Dictionary, NameTree, Stream
+def parse_cos_value(string: bytes) -> tuple[CosValue, bytes]:
+    types = Reference, Stream, Dictionary, String, Name, Array, Null, Boolean, Number
 
     for cos_type in types:
         try:
-            return cos_type.from_str(string)
+            return cos_type.from_bytes(string)
         except ParseError:
             pass
 
