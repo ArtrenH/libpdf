@@ -154,5 +154,4 @@ class PdfFile:
 if __name__ == "__main__":
     # p = PdfFile.from_file("sample_pdf/hello_world_example_oreilly.pdf")
     p2 = PdfFile.from_file("sample_pdf/hello_world_example_oreilly.pdf")
-    pprint(p2.body.objects)
 
