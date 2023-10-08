@@ -15,15 +15,33 @@ class CosValue(abc.ABC):
     @classmethod
     @abc.abstractmethod
     def from_bytes(cls, string: bytes) -> tuple[typing.Self, bytes]:
-        """Returns the parsed COS value and the remaining string."""
+        """Return the parsed COS value and the remaining string."""
         raise ParseError
+
+    @property
+    @abc.abstractmethod
+    def children(self) -> typing.Iterable[CosValue]:
+        ...
+
+    @abc.abstractmethod
+    def replace_references(self, references: dict[tuple[int, int], CosValue]) -> None:
+        ...
 
     def to_bytes(self) -> str:
         ...
 
 
+class _NoChildrenMixin:
+    @property
+    def children(self) -> typing.Iterable[CosValue]:
+        return ()
+
+    def replace_references(self, references: dict[tuple[int, int], CosValue]) -> None:
+        pass
+
+
 @dataclasses.dataclass
-class Null(CosValue):
+class Null(_NoChildrenMixin, CosValue):
     @classmethod
     def from_bytes(cls, string: bytes) -> tuple[Null, bytes]:
         string = string.lstrip()
@@ -35,7 +53,7 @@ class Null(CosValue):
 
 
 @dataclasses.dataclass
-class Boolean(CosValue):
+class Boolean(_NoChildrenMixin, CosValue):
     value: bool
 
     @classmethod
@@ -51,10 +69,24 @@ class Boolean(CosValue):
 
 
 @dataclasses.dataclass
-class String(CosValue):
-    value: str
+class String(_NoChildrenMixin, CosValue):
+    value: bytes
+    encoding: str | None
 
     _OCTAL_ESCAPE: typing.ClassVar[re.Pattern] = re.compile(r"\\\d\d\d")
+
+    def get_str(self, encoding: str | None = None) -> str:
+        assert self.encoding is not None is not encoding
+        return self.value.decode(encoding or self.encoding)
+
+    @classmethod
+    def from_str(cls, string: str | bytes) -> String:
+        if isinstance(string, str):
+            return String(string.encode("utf-8"), "utf-8")
+        elif isinstance(string, bytes):
+            return String(string, None)
+        else:
+            raise TypeError(f"String must be str or bytes, not {type(string)}.")
 
     @classmethod
     def from_bytes(cls, string: bytes) -> tuple[String, bytes]:
@@ -79,7 +111,7 @@ class String(CosValue):
 
                 string = re.sub(cls._OCTAL_ESCAPE, lambda match: chr(int(match.group()[1:], 8)), string)
 
-                return cls(string), remainder
+                return cls.from_str(string), remainder
 
         elif string.startswith(b"<"):
             try:
@@ -92,7 +124,10 @@ class String(CosValue):
 
                 hex_nums_as_string = [elem for elem in zip(string[::2], string[1::2])]
                 try:
-                    return cls(''.join([chr(int(''.join(elem), 16)) for elem in hex_nums_as_string])), remainder
+                    return cls(
+                        b''.join([bytes((int(''.join(elem), 16),)) for elem in hex_nums_as_string]),
+                        encoding=None
+                    ), remainder
                 except ValueError as e:
                     raise ParseError("String contains invalid hex literal.") from e
 
@@ -102,7 +137,7 @@ class String(CosValue):
 
 
 @dataclasses.dataclass
-class Number(CosValue):
+class Number(_NoChildrenMixin, CosValue):
     value: float | int
 
     _REGEX: typing.ClassVar[re.Pattern] = re.compile(rb"([+-]?(?:\d+(?:\.\d+)?)|(?:\.\d+))")
@@ -139,7 +174,7 @@ _WHITESPACE = b"\x00\x09\x0A\x0C\x0D\x20"
 
 
 @dataclasses.dataclass
-class Name(CosValue):
+class Name(_NoChildrenMixin, CosValue):
     label: str
 
     _NONREGULAR_CHARACTERS: typing.ClassVar[re.Pattern] = re.compile("#[0-9A-Fa-f]{2}")
@@ -210,10 +245,24 @@ class Array(CosValue):
 
         return cls(elements), string
 
+    @property
+    def children(self) -> typing.Iterable[CosValue]:
+        return self.elements
+
+    def replace_references(self, references: dict[tuple[int, int], CosValue]) -> None:
+        for i, element in enumerate(self.elements):
+            if isinstance(element, Reference):
+                try:
+                    self.elements[i] = references[(element.obj_num, element.gen_num)]
+                except KeyError as e:
+                    raise ParseError(f"Reference {element!r} does not exist.") from e
+            else:
+                element.replace_references(references)
+
 
 @dataclasses.dataclass
 class Dictionary(CosValue):
-    value: dict
+    value: dict[str, CosValue]
 
     @classmethod
     def from_bytes(cls, string: bytes) -> tuple[Dictionary, bytes]:
@@ -245,6 +294,26 @@ class Dictionary(CosValue):
 
         return cls(value), string
 
+    @property
+    def children(self) -> typing.Iterable[CosValue]:
+        return self.value.values()
+
+    def replace_references(self, references: dict[tuple[int, int], CosValue]) -> None:
+        for key, element in self.value.items():
+            if isinstance(element, Reference):
+                try:
+                    self.value[key] = references[(element.obj_num, element.gen_num)]
+                except KeyError as e:
+                    raise ParseError(f"Reference {element!r} does not exist.") from e
+            else:
+                element.replace_references(references)
+
+    def __getitem__(self, item):
+        return self.value[item]
+
+    def __contains__(self, item):
+        return item in self.value
+
 
 @dataclasses.dataclass
 class Stream(CosValue):
@@ -269,9 +338,26 @@ class Stream(CosValue):
 
         return cls(dictionary, out_bytes), remainder
 
+    @property
+    def children(self) -> typing.Iterable[CosValue]:
+        return self.stream_dict.children
+
+    def replace_references(self, references: dict[tuple[int, int], CosValue]) -> None:
+        self.stream_dict.replace_references(references)
+
+    def decode(self) -> bytes:
+        if "Filter" in self.stream_dict:
+            if self.stream_dict["Filter"].label == "FlateDecode":
+                import zlib
+                return zlib.decompress(self.value)
+            else:
+                raise NotImplementedError(f"Filter {self.stream_dict['Filter'].value!r} not implemented.")
+        else:
+            return self.value
+
 
 @dataclasses.dataclass
-class Reference(CosValue):
+class Reference(_NoChildrenMixin, CosValue):
     obj_num: int
     gen_num: int
 

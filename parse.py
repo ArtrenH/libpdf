@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import abc
 import dataclasses
-import typing
 from pprint import pprint
 
-from cos import parse_cos_value, CosValue
+import cos
 
 
 class ParseError(Exception):
@@ -14,13 +12,13 @@ class ParseError(Exception):
 
 @dataclasses.dataclass
 class Object:
-    obj_id: int
-    generation: int
+    obj_num: int
+    gen_num: int
     content: bytes
-    parsed_content: CosValue = dataclasses.field(init=False)
+    parsed_content: cos.CosValue = dataclasses.field(init=False)
 
     def __post_init__(self):
-        self.parsed_content = parse_cos_value(self.content)[0]
+        self.parsed_content = cos.parse_cos_value(self.content)[0]
 
     @classmethod
     def from_bytes(cls, byte_string: bytes) -> Object:
@@ -54,6 +52,7 @@ class Body:
 
     def __post_init__(self):
         self.extract_objects()
+        self.resolve_references()
 
     def extract_objects(self) -> None:
         """Extracts all objects from the body."""
@@ -65,7 +64,16 @@ class Body:
             raise ParseError("Invalid body: number of object starts and ends do not match.")
         for start, end in zip(object_starts, object_ends):
             cur_object = Object.from_bytes(b"\n".join(lines[start:end + 1]))
-            self.objects[(cur_object.obj_id, cur_object.generation)] = cur_object
+            self.objects[cur_object.obj_num, cur_object.gen_num] = cur_object
+
+    def resolve_references(self):
+        lookup = {(obj.obj_num, obj.gen_num): obj.parsed_content for obj in self.objects.values()}
+
+        for obj in self.objects.values():
+            if isinstance(obj.parsed_content, cos.CosValue):
+                obj.parsed_content.replace_references(lookup)
+            else:
+                raise ParseError(f"Invalid object: {obj.parsed_content!r} is not a CosValue.")
 
 
 @dataclasses.dataclass
@@ -76,16 +84,24 @@ class CrossReferenceTable:
 @dataclasses.dataclass
 class Trailer:
     content: bytes
+    parsed_content: cos.Dictionary = dataclasses.field(init=False)
+
+    def __post_init__(self):
+        if not self.content.startswith(b"trailer\n"):
+            raise ParseError("Invalid trailer: does not start with b'trailer\\n'.")
+
+        _, trailer_data_start = self.content.split(b"\n", 1)
+
+        self.parsed_content = cos.parse_cos_value(trailer_data_start)[0]
 
 
 @dataclasses.dataclass
 class PdfSplitter:
     string: bytes
-    lines: list[bytes]
+    lines: list[bytes] = dataclasses.field(init=False)
 
-    @classmethod
-    def from_bytes(cls, byte_string: bytes) -> PdfSplitter:
-        return cls(byte_string, byte_string.split(b"\n"))
+    def __post_init__(self):
+        self.lines = self.string.split(b"\n")
 
     def find_header_start(self) -> int:
         for i, line in enumerate(self.lines):
@@ -138,7 +154,7 @@ class PdfFile:
     @classmethod
     def from_bytes(cls, byte_string: bytes) -> PdfFile:
         lines = byte_string.split(b"\n")
-        pdf_splitter = PdfSplitter.from_bytes(byte_string)
+        pdf_splitter = PdfSplitter(byte_string)
         header_start = pdf_splitter.find_header_start()
         body_start = pdf_splitter.find_first_object()
         cross_reference_table_start = pdf_splitter.find_cross_reference_table()
@@ -151,7 +167,33 @@ class PdfFile:
         )
 
 
+@dataclasses.dataclass
+class MediaBox:
+    lower_left_x: float
+    lower_left_y: float
+    upper_right_x: float
+    upper_right_y: float
+
+    @classmethod
+    def from_cos_array(cls, cos_value: cos.Array) -> MediaBox:
+        return cls(
+            cos_value.elements[0].value,
+            cos_value.elements[1].value,
+            cos_value.elements[2].value,
+            cos_value.elements[3].value,
+        )
+
+
 if __name__ == "__main__":
     # p = PdfFile.from_file("sample_pdf/hello_world_example_oreilly.pdf")
-    p2 = PdfFile.from_file("sample_pdf/hello_world_example_oreilly.pdf")
+    p2 = PdfFile.from_file("sample_pdf/hello_world_libreoffice.pdf")
 
+    root_reference: cos.Reference = p2.trailer.parsed_content["Root"]
+    root_object = p2.body.objects[root_reference.obj_num, root_reference.gen_num].parsed_content
+    for page in root_object["Pages"]["Kids"].elements:
+        print("Type:", page["Type"])
+        print("MediaBox:", MediaBox.from_cos_array(page["MediaBox"]))
+        print("Content:")
+        print(page["Contents"].decode().decode("utf-8"))
+        with open("font.ttf", "wb") as f:
+            f.write(page["Resources"]["Font"]["F1"]["FontDescriptor"]["FontFile2"].decode())

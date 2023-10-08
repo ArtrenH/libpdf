@@ -20,29 +20,29 @@ class TestBoolean(unittest.TestCase):
 
 class TestString(unittest.TestCase):
     def test_ascii(self):
-        self.assertEqual(parse_cos_value(b"(hello)"), (String("hello"), b""))
-        self.assertEqual(parse_cos_value(b"(hello) asd"), (String("hello"), b" asd"))
-        self.assertEqual(parse_cos_value(b"(hello world xyz)"), (String("hello world xyz"), b""))
+        self.assertEqual(parse_cos_value(b"(hello)"), (String.from_str("hello"), b""))
+        self.assertEqual(parse_cos_value(b"(hello) asd"), (String.from_str("hello"), b" asd"))
+        self.assertEqual(parse_cos_value(b"(hello world xyz)"), (String.from_str("hello world xyz"), b""))
 
     def test_escape(self):
-        self.assertEqual(parse_cos_value(rb"(hello\053world)"), (String("hello+world"), b""))
-        self.assertEqual(parse_cos_value(rb"(A\053B)"), (String("A+B"), b""))
+        self.assertEqual(parse_cos_value(rb"(hello\053world)"), (String.from_str("hello+world"), b""))
+        self.assertEqual(parse_cos_value(rb"(A\053B)"), (String.from_str("A+B"), b""))
 
     def test_pdf_doc_encoding(self):
         # TODO
-        self.assertEqual(parse_cos_value(r"(Français)".encode("utf-8")), (String("Français"), b""))
+        self.assertEqual(parse_cos_value(r"(Français)".encode("utf-8")), (String.from_str("Français"), b""))
 
     def test_binary(self):
-        self.assertEqual(parse_cos_value(rb"<1C2D3F>"), (String("\x1c\x2d\x3f"), b""))
-        self.assertEqual(parse_cos_value(rb"<3A5C7E>"), (String("\x3a\x5c\x7e"), b""))
+        self.assertEqual(parse_cos_value(rb"<1C2D3F>"), (String.from_str(b"\x1c\x2d\x3f"), b""))
+        self.assertEqual(parse_cos_value(rb"<3A5C7E>"), (String.from_str(b"\x3a\x5c\x7e"), b""))
 
     # def test_binary_bom(self):
     #     # bom = byte order mark
-    #     self.assertEqual(parse_cos_value("<FFFE0040>"), (String(b"\xff\xfe\x00\x40"), ""))
-    #     self.assertEqual(parse_cos_value("<FEFF0040>"), (String(b"\xfe\xff\x00\x40"), ""))
+    #     self.assertEqual(parse_cos_value("<FFFE0040>"), (String.from_str(b"\xff\xfe\x00\x40"), ""))
+    #     self.assertEqual(parse_cos_value("<FEFF0040>"), (String.from_str(b"\xfe\xff\x00\x40"), ""))
 
     def test_date(self):
-        self.assertEqual(parse_cos_value(rb"(D:19990209153925-08'00')"), (String("D:19990209153925-08'00'"), b""))
+        self.assertEqual(parse_cos_value(rb"(D:19990209153925-08'00')"), (String.from_str("D:19990209153925-08'00'"), b""))
 
 
 class TestNumber(unittest.TestCase):
@@ -111,7 +111,7 @@ class TestDictionary(unittest.TestCase):
             parse_cos_value(b"<</Type /Page/Author (Leonard Rosenthol)/Resources << /Font [ /F1 /F2 ] >>>>"),
             (Dictionary({
                 "Type": Name("Page"),
-                "Author": String("Leonard Rosenthol"),
+                "Author": String.from_str("Leonard Rosenthol"),
                 "Resources": Dictionary({"Font": Array([Name("F1"), Name("F2")])})}
             ), b"")
         )
